@@ -20,6 +20,9 @@ int main(void)
     player.Play();
     sleep(10);
 
+    player.AppendData(ss.str().c_str(), ss.tellp());
+    sleep(10);
+
     player.Stop();
 
     std::cout << "exiting.." << std::endl;
