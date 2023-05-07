@@ -25,7 +25,7 @@ int main(void)
 
     player.Stop();
 
-    std::cout << "exiting.." << std::endl;
+    LOG("MAIN", LOG_INFO, "exiting...");
 
     return 0;
 }

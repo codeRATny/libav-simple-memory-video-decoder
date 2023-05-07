@@ -9,25 +9,22 @@
 #include <sstream>
 #include <mutex>
 #include "utils.hpp"
+#include "lazy_logs.hpp"
+#include "player_utils.hpp"
 
 extern "C"
 {
 #include <libavformat/avformat.h>
-#include <libavutil/mathematics.h>
-#include <libavutil/time.h>
-#include <libswscale/swscale.h>
 #include <libavcodec/avcodec.h>
 #include <libavcodec/codec.h>
 #include <libavutil/avutil.h>
-#include <libavutil/opt.h>
+#include <libavutil/log.h>
 #include <unistd.h>
 #include <fcntl.h>
 };
 
 #define DEFAULT_BUFF_SIZE 1024*1024
 #define SIZE_TS_PACK 188
-
-#define LOG(message) std::cout << message << std::endl
 
 struct Packet
 {
@@ -82,6 +79,7 @@ private:
     static int setup_input(Player *context);
     static bool grab_frames(Player *context);
     static void decode_queue(Player *context);
+    void drop_queue();
 
 public:
     void AppendData(const char *new_data, size_t new_data_size);

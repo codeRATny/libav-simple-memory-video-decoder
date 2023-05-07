@@ -4,9 +4,6 @@
 extern "C"
 {
 #include <libavformat/avformat.h>
-#include <libavutil/mathematics.h>
-#include <libavutil/time.h>
-#include <libswscale/swscale.h>
 #include <libavcodec/avcodec.h>
 #include <libavcodec/codec.h>
 #include <libavutil/avutil.h>

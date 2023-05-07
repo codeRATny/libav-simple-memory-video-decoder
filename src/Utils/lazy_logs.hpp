@@ -1,5 +1,6 @@
 #ifndef _LAZY_LOGS_H_
 #define _LAZY_LOGS_H_
+#include <iostream>
 
 // levels:
 // 0 - quiet

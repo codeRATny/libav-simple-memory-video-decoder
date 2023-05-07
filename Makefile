@@ -1,7 +1,7 @@
 .Phony: all clean clean_frames
 
 CXX = g++
-LIBS = -lavcodec -lavformat -lavfilter -lavdevice -lswresample -lswscale -lavutil
+LIBS = -lavcodec -lavformat -lavutil
 
 INCLUDES += -I ./src/Utils
 INCLUDES += -I ./src/Player
@@ -12,6 +12,8 @@ SRC_PATH = src
 
 CFLAGS = -Wall
 LDFLAGS = -Wall
+# CFLAGS += -g -fsanitize=leak
+# LDFLAGS += -g -fsanitize=leak
 
 all: $(BIN_PATH)/main
 

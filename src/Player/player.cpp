@@ -1,9 +1,4 @@
-#include <iostream>
 #include "player.hpp"
-#include "player_utils.hpp"
-#include <libavutil/log.h>
-#include <semaphore>
-#include "lazy_logs.hpp"
 
 #define LOGS(lvl, message) LOG("INPUT SETUP", lvl, message)
 #define LOGP(lvl, message) LOG("PARSER", lvl, message)
@@ -35,7 +30,7 @@ int Player::setup_input(Player *context)
             break;
         }
     }
-    
+
     LOGS(LOG_INFO, "READY TO PLAY");
     LOGS(LOG_LVL, "Stream index" + std::to_string(context->_video_stream));
 
@@ -80,8 +75,6 @@ bool Player::grab_frames(Player *context)
     }
 
     // adding opened codec
-    context->_frame = av_frame_alloc();
-
     context->_codec_context = context->_format_context->streams[context->_video_stream]->codec;
 
     if (context->_format_context->streams[context->_video_stream]->codec->codec->capabilities & CODEC_CAP_TRUNCATED)
@@ -127,6 +120,7 @@ static std::string get_filename()
 void Player::decode_queue(Player *context)
 {
     int frameFinished;
+    context->_frame = av_frame_alloc();
 
     // endless loop for decoding queue of packs
     do
@@ -162,6 +156,7 @@ Player::Player()
     _codec_context = NULL;
     _video_stream = -1;
     _frame = NULL;
+    _avio_in = NULL;
 
     _state = STATE_NO_DATA | STATE_STOP;
     _append_buff_size = DEFAULT_BUFF_SIZE;
@@ -190,12 +185,27 @@ Player::~Player()
         _decoder_thread.join();
     }
 
+    drop_queue();
+
+    if (_avio_in)
+    {
+        av_freep(&_avio_in->buffer);
+        avio_context_free(&_avio_in);
+    }
+
     if (_codec_context)
         avcodec_close(_codec_context);
+
     if (_format_context)
+    {
         avformat_close_input(&_format_context);
+    }
+
     if (_append_buff)
         free(_append_buff);
+    
+    if (_frame)
+        av_frame_free(&_frame);
 }
 
 void Player::Play()
@@ -216,8 +226,17 @@ void Player::Play()
         _setup_thread = std::thread(setup_input, this);
         _parser_thread = std::thread(grab_frames, this);
         _decoder_thread = std::thread(decode_queue, this);
-        
+
         LOGM(LOG_INFO, "PLAYING");
+    }
+}
+
+void Player::drop_queue()
+{
+    while (_queue_packs.size() != 0)
+    {
+        av_free_packet(&_queue_packs.front().avpack);
+        _queue_packs.pop();
     }
 }
 
@@ -241,16 +260,33 @@ void Player::Stop()
         _decoder_thread.join();
     }
 
+    drop_queue();
+
     if (_codec_context)
     {
         avcodec_close(_codec_context);
         _codec_context = NULL;
     }
+
+    if (_avio_in)
+    {
+        av_freep(&_avio_in->buffer);
+        avio_context_free(&_avio_in);
+        _avio_in = NULL;
+    }
+
+    if (_frame)
+    {
+        av_frame_free(&_frame);
+        _frame = NULL;
+    }
+
     if (_format_context)
     {
         avformat_close_input(&_format_context);
         _format_context = NULL;
     }
+
     if (_append_buff)
     {
         free(_append_buff);
