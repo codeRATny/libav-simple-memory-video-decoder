@@ -212,7 +212,7 @@ void Player::Play()
     else if (_state & STATE_STOP)
     {
         _state ^= STATE_STOP;
-        _state ^= STATE_PLAY;
+        _state |= STATE_PLAY;
         _setup_thread = std::thread(setup_input, this);
         _parser_thread = std::thread(grab_frames, this);
         _decoder_thread = std::thread(decode_queue, this);

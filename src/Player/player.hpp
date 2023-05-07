@@ -47,7 +47,6 @@ enum PlayerStates
 class Player
 {
 private:
-    std::thread _stream_thread;
     std::thread _parser_thread;
     std::thread _decoder_thread;
     std::thread _setup_thread;
