@@ -5,23 +5,23 @@ int main(void)
 {
     // E.G. DATA
     std::stringstream ss;
-    std::ifstream t("../video_samples/sample.ts");
+    std::ifstream t("");
     ss << t.rdbuf();
     
     Player player;
     player.AppendData(ss.str().c_str(), ss.tellp());
-    player.AppendData(ss.str().c_str(), ss.tellp());
+    // player.AppendData(ss.str().c_str(), ss.tellp());
 
     player.Play();
     
-    player.Pause();
-    sleep(2);
+    // player.Pause();
+    // sleep(2);
 
-    player.Play();
-    sleep(10);
+    // player.Play();
+    // sleep(10);
 
-    player.AppendData(ss.str().c_str(), ss.tellp());
-    sleep(10);
+    // player.AppendData(ss.str().c_str(), ss.tellp());
+    sleep(4);
 
     player.Stop();
 

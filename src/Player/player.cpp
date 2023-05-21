@@ -22,9 +22,11 @@ int Player::setup_input(Player *context)
     // open empty io
     avformat_open_input(&context->_format_context, NULL, NULL, NULL);
 
+    // context->_format_context->streams[0]->codecpar->codec_type
+
     for (int i = 0; i < context->_format_context->nb_streams; i++)
     {
-        if (context->_format_context->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO)
+        if (context->_format_context->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
         {
             context->_video_stream = i;
             break;
@@ -46,38 +48,39 @@ bool Player::grab_frames(Player *context)
 
     // join setup thread
     context->_setup_thread.join();
+    
 
-    if (!context->_format_context->streams[context->_video_stream] || !context->_format_context->streams[context->_video_stream]->codec)
+    if (!context->_format_context->streams[context->_video_stream] || !context->_format_context->streams[context->_video_stream]->codecpar)
     {
         LOGP(LOG_WARN, "Not valid stream or codec");
         exit(1);
     }
 
-    if (context->_format_context->streams[context->_video_stream]->codec->codec_type != AVMEDIA_TYPE_VIDEO)
+    if (context->_format_context->streams[context->_video_stream]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
     {
         LOGP(LOG_WARN, "Skipping audio");
         context->Stop();
     }
 
-    context->_format_context->streams[context->_video_stream]->codec->codec = avcodec_find_decoder(context->_format_context->streams[context->_video_stream]->codec->codec_id);
-    if (context->_format_context->streams[context->_video_stream]->codec->codec == NULL)
+    context->_codec_context = avcodec_alloc_context3(avcodec_find_decoder(context->_format_context->streams[context->_video_stream]->codecpar->codec_id));
+
+    if (context->_codec_context->codec == NULL)
     {
         LOGP(LOG_WARN, "Decoder not found, skipping...");
         context->Stop();
     }
 
-    LOGP(LOG_INFO, "Codec " + std::string(context->_format_context->streams[context->_video_stream]->codec->codec->name));
+    LOGP(LOG_INFO, "Codec " + std::string(context->_codec_context->codec->name));
 
-    if (avcodec_open2(context->_format_context->streams[context->_video_stream]->codec, context->_format_context->streams[context->_video_stream]->codec->codec, NULL) < 0)
+    if (avcodec_open2(context->_codec_context, context->_codec_context->codec, NULL) < 0)
     {
         LOGP(LOG_ERR, "Codec open err");
         context->Stop();
     }
 
     // adding opened codec
-    context->_codec_context = context->_format_context->streams[context->_video_stream]->codec;
 
-    if (context->_format_context->streams[context->_video_stream]->codec->codec->capabilities & CODEC_CAP_TRUNCATED)
+    if (context->_codec_context->codec->capabilities & CODEC_CAP_TRUNCATED)
     {
         context->_codec_context->flags |= CODEC_FLAG_TRUNCATED;
     }
@@ -136,7 +139,7 @@ void Player::decode_queue(Player *context)
         avcodec_receive_frame(context->_codec_context, context->_frame);
 
         // free mem and save
-        av_free_packet(&context->_queue_packs.front().avpack);
+        av_packet_unref(&context->_queue_packs.front().avpack);
         if (context->_frame->pkt_size != -1)
             SaveAvFrame(context->_frame, get_filename().c_str());
         av_frame_unref(context->_frame);
@@ -194,7 +197,9 @@ Player::~Player()
     }
 
     if (_codec_context)
-        avcodec_close(_codec_context);
+    {
+        avcodec_free_context(&_codec_context);
+    }
 
     if (_format_context)
     {
@@ -235,7 +240,7 @@ void Player::drop_queue()
 {
     while (_queue_packs.size() != 0)
     {
-        av_free_packet(&_queue_packs.front().avpack);
+        av_packet_unref(&_queue_packs.front().avpack);
         _queue_packs.pop();
     }
 }
@@ -264,7 +269,7 @@ void Player::Stop()
 
     if (_codec_context)
     {
-        avcodec_close(_codec_context);
+        avcodec_free_context(&_codec_context);
         _codec_context = NULL;
     }
 
