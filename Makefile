@@ -1,36 +1,36 @@
-.Phony: all clean clean_frames
+.Phony: all clean prepare
 
 CXX = g++
-LIBS = -lavcodec -lavformat -lavutil
+LIBS += -lavcodec -lavformat -lavutil
 
 INCLUDES += -I ./src/Utils
 INCLUDES += -I ./src/Player
+INCLUDES += -I ./src/FFmpegWrap
 
 BIN_PATH = bin
 BUILD_PATH = build
 SRC_PATH = src
 
-CFLAGS = -Wall
-LDFLAGS = -Wall
-# CFLAGS += -g -fsanitize=leak
-# LDFLAGS += -g -fsanitize=leak
+# CFLAGS = -Wall -g
+# LDFLAGS = -Wall -g
+CFLAGS = -Wall -g -fsanitize=leak
+LDFLAGS = -Wall -g -fsanitize=leak
 
-all: $(BIN_PATH)/main
+CBJS += $(shell find $(SRC_PATH) -name "*.cpp" -type f)
+OBJS := $(patsubst %.cpp,%.o, $(CBJS))
 
-$(BIN_PATH)/main: $(BUILD_PATH)/main.o $(BUILD_PATH)/player.o $(BUILD_PATH)/player_utils.o
-	$(CXX) $(CFLAGS) $^ -o $@ $(LIBS) $(INCLUDES)
+define clean_objs
+	rm $(OBJS)
+endef
 
-$(BUILD_PATH)/main.o: $(SRC_PATH)/main.cpp
-	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
+all: $(OBJS) $(BIN_PATH)/main
 
-$(BUILD_PATH)/player.o: $(SRC_PATH)/Player/player.cpp
-	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
+%.o : %.cpp
+	$(CXX) $(CFLAGS) -c  $< -o $@ $(INCLUDES) $(LIBS)
 
-$(BUILD_PATH)/player_utils.o: $(SRC_PATH)/Player/player_utils.cpp
-	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
+$(BIN_PATH)/main: $(OBJS)
+	$(CXX) $(CFLAGS) $^ -o $@ $(INCLUDES) $(LIBS)
 
 clean:
-	rm build/*.o bin/main
-
-clean_frames:
-	rm bin/*.yuv
+	$(call clean_objs)
+	rm $(BIN_PATH)/main

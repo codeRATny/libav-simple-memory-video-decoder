@@ -1,112 +1,84 @@
 #include "player.hpp"
 
-#define LOGS(lvl, message) LOG("INPUT SETUP", lvl, message)
-#define LOGP(lvl, message) LOG("PARSER", lvl, message)
-#define LOGD(lvl, message) LOG("DECODER", lvl, message)
-#define LOGR(lvl, message) LOG("DATA READER", lvl, message)
-#define LOGM(lvl, message) LOG("PLAYER", lvl, message)
-
-int Player::setup_input(Player *context)
+int Player::setup_input()
 {
-    context->_setup_sem.wait();
-    int ret;
+    _setup_sem.wait();
 
-    // reader buff
-    context->_ibuf = (uint8_t *)av_malloc(context->_ibuf_size);
+    LOG(LOG_INFO, "Creating avio ctx");
+    _avio_ctx = std::make_shared<FFmpegIOCtx>();
 
-    // create context for reading from memory
-    context->_avio_in = avio_alloc_context(context->_ibuf, context->_ibuf_size, 0, context, &read_packet, NULL, NULL);
-    context->_format_context = avformat_alloc_context();
-    context->_format_context->pb = context->_avio_in;
+    LOG(LOG_INFO, "Setuping read cb");
+    _avio_ctx->SetOnRead([&](uint8_t *buf, int buf_size){
+        std::lock_guard<std::mutex> lock(_data_mutex);
 
-    // open empty io
-    avformat_open_input(&context->_format_context, NULL, NULL, NULL);
-
-    // context->_format_context->streams[0]->codecpar->codec_type
-
-    for (int i = 0; i < context->_format_context->nb_streams; i++)
-    {
-        if (context->_format_context->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+        if (_data.tellg() >= _data.tellp())
         {
-            context->_video_stream = i;
-            break;
+            if (_state & STATE_HAVE_DATA)
+            {
+                _state ^= STATE_HAVE_DATA;
+                _state |= STATE_NO_DATA;
+                LOG(LOG_WARN, "no data");
+            }
+            return AVERROR_EOF;
         }
+
+        _data.read((char *)buf, buf_size);
+
+        return buf_size;
+    });
+
+    LOG(LOG_INFO, "Creating format ctx");
+    _format_ctx = std::make_shared<FFmpegFormatCtx>(_avio_ctx, SIZE_TS_PACK);
+
+    LOG(LOG_INFO, "Call FindVideoStreamIDX");
+    auto ids = _format_ctx->FindVideoStreamIDX();
+
+    for (auto& i : ids)
+    {
+        LOG(LOG_INFO, "Found stream id = " + std::to_string(i));
+        _video_stream_idx = ids[i];
     }
 
-    LOGS(LOG_INFO, "READY TO PLAY");
-    LOGS(LOG_LVL, "Stream index" + std::to_string(context->_video_stream));
+    LOG(LOG_INFO, "READY TO PLAY");
+    LOG(LOG_LVL, "Stream index" + std::to_string(_video_stream_idx));
 
-    context->_start_sem.post();
+    _start_sem.post();
 
     return 0;
 }
 
-bool Player::grab_frames(Player *context)
+bool Player::grab_frames()
 {
     // waiting for play
-    context->_start_sem.wait();
+    _start_sem.wait();
+    _setup_thread.join();
 
-    // join setup thread
-    context->_setup_thread.join();
-    
+    auto codec_id = _format_ctx->GetCodecID(_video_stream_idx);
 
-    if (!context->_format_context->streams[context->_video_stream] || !context->_format_context->streams[context->_video_stream]->codecpar)
-    {
-        LOGP(LOG_WARN, "Not valid stream or codec");
-        exit(1);
-    }
-
-    if (context->_format_context->streams[context->_video_stream]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
-    {
-        LOGP(LOG_WARN, "Skipping audio");
-        context->Stop();
-    }
-
-    context->_codec_context = avcodec_alloc_context3(avcodec_find_decoder(context->_format_context->streams[context->_video_stream]->codecpar->codec_id));
-
-    if (context->_codec_context->codec == NULL)
-    {
-        LOGP(LOG_WARN, "Decoder not found, skipping...");
-        context->Stop();
-    }
-
-    LOGP(LOG_INFO, "Codec " + std::string(context->_codec_context->codec->name));
-
-    if (avcodec_open2(context->_codec_context, context->_codec_context->codec, NULL) < 0)
-    {
-        LOGP(LOG_ERR, "Codec open err");
-        context->Stop();
-    }
-
-    // adding opened codec
-
-    if (context->_codec_context->codec->capabilities & CODEC_CAP_TRUNCATED)
-    {
-        context->_codec_context->flags |= CODEC_FLAG_TRUNCATED;
-    }
-
-    int rt;
+    _codec_ctx = std::make_shared<FFmpegCodecCtx>();
+    _codec_ctx->Open(codec_id);
 
     // endless loop for parse packs
     do
     {
-        AVPacket pack;
+        FFmpegPacket::Ptr packet = std::make_shared<FFmpegPacket>();
 
-        LOGP(LOG_INFO, "receive new data");
+        LOG(LOG_INFO, "receive new data");
 
-        while ((rt = av_read_frame(context->_format_context, &pack)) >= 0)
+
+        while (_format_ctx->ReadPacket(packet) >= 0)
         {
-            context->_parser_mutex.lock();
-            context->_queue_packs.push({pack.dts, pack.pts, std::move(pack)});
-            context->_queue_sem.post();
-            context->_parser_mutex.unlock();
+            _parser_mutex.lock();
+            _queue_packs.push(std::move(packet));
+            _queue_sem.post();
+            _parser_mutex.unlock();
         }
 
-        LOGP(LOG_INFO, "waiting data");
-        context->_append_sem.wait();
+        LOG(LOG_INFO, "waiting data");
+        _append_sem.wait();
 
         // drop eos
-        context->_format_context->pb->eof_reached = 0;
+        _format_ctx->DropEOS();
     } while (true);
 
     return 0;
@@ -120,97 +92,49 @@ static std::string get_filename()
     return "frame_" + std::to_string(i) + ".yuv";
 }
 
-void Player::decode_queue(Player *context)
+void Player::decode_queue()
 {
-    int frameFinished;
-    context->_frame = av_frame_alloc();
-
     // endless loop for decoding queue of packs
     do
     {
         // waiting for data on queue
-        context->_queue_sem.wait();
+        _queue_sem.wait();
 
-        context->_decoder_mutex.lock();
+        _decoder_mutex.lock();
 
         // decode
-        avcodec_get_frame_defaults(context->_frame);
-        avcodec_send_packet(context->_codec_context, &context->_queue_packs.front().avpack);
-        avcodec_receive_frame(context->_codec_context, context->_frame);
+        auto frame = _codec_ctx->Decode(_queue_packs.front());
 
-        // free mem and save
-        av_packet_unref(&context->_queue_packs.front().avpack);
-        if (context->_frame->pkt_size != -1)
-            SaveAvFrame(context->_frame, get_filename().c_str());
-        av_frame_unref(context->_frame);
+        // save
+        if (frame)
+            SaveAvFrame(frame, get_filename().c_str());
 
-        context->_queue_packs.pop();
+        _queue_packs.pop();
 
-        context->_decoder_mutex.unlock();
+        _decoder_mutex.unlock();
     } while (true);
 }
 
 Player::Player()
 {
-    av_log_set_level(AV_LOG_QUIET);
+    // av_log_set_level(AV_LOG_QUIET);
+    _format_ctx = nullptr;
+    LOG(LOG_INFO, "Init Player");
 
     _append_buff_size_update_counter = 0;
-    _format_context = NULL;
-    _codec_context = NULL;
-    _video_stream = -1;
-    _frame = NULL;
-    _avio_in = NULL;
+    _video_stream_idx = -1;
 
     _state = STATE_NO_DATA | STATE_STOP;
-    _append_buff_size = DEFAULT_BUFF_SIZE;
-    _ibuf_size = SIZE_TS_PACK;
 
-    _append_buff = (char *)malloc(_append_buff_size);
+    _append_buff_size = DEFAULT_BUFF_SIZE;
+    _append_buff = new char[_append_buff_size];
 }
 
 Player::~Player()
 {
-    if (_setup_thread.joinable())
-    {
-        pthread_cancel(_setup_thread.native_handle());
-        _setup_thread.join();
-    }
-
-    if (_parser_thread.joinable())
-    {
-        pthread_cancel(_parser_thread.native_handle());
-        _parser_thread.join();
-    }
-
-    if (_decoder_thread.joinable())
-    {
-        pthread_cancel(_decoder_thread.native_handle());
-        _decoder_thread.join();
-    }
-
-    drop_queue();
-
-    if (_avio_in)
-    {
-        av_freep(&_avio_in->buffer);
-        avio_context_free(&_avio_in);
-    }
-
-    if (_codec_context)
-    {
-        avcodec_free_context(&_codec_context);
-    }
-
-    if (_format_context)
-    {
-        avformat_close_input(&_format_context);
-    }
-
-    if (_append_buff)
-        free(_append_buff);
-    
-    if (_frame)
-        av_frame_free(&_frame);
+    Stop();
+    _format_ctx = nullptr;
+    LOG(LOG_INFO, "Deinit Player");
 }
 
 void Player::Play()
@@ -222,17 +146,25 @@ void Player::Play()
         _parser_mutex.unlock();
         _decoder_mutex.unlock();
 
-        LOGM(LOG_INFO, "RESUME");
+        LOG(LOG_INFO, "RESUME");
     }
     else if (_state & STATE_STOP)
     {
         _state ^= STATE_STOP;
         _state |= STATE_PLAY;
-        _setup_thread = std::thread(setup_input, this);
-        _parser_thread = std::thread(grab_frames, this);
-        _decoder_thread = std::thread(decode_queue, this);
+        _setup_thread = std::thread([&](){
+            setup_input();
+        });
 
-        LOGM(LOG_INFO, "PLAYING");
+        _parser_thread = std::thread([&](){
+            grab_frames();
+        });
+
+        _decoder_thread = std::thread([&](){
+            decode_queue();
+        });
+
+        LOG(LOG_INFO, "PLAYING");
     }
 }
 
@@ -240,7 +172,6 @@ void Player::drop_queue()
 {
     while (_queue_packs.size() != 0)
     {
-        av_packet_unref(&_queue_packs.front().avpack);
         _queue_packs.pop();
     }
 }
@@ -252,7 +183,7 @@ void Player::Stop()
         pthread_cancel(_setup_thread.native_handle());
         _setup_thread.join();
     }
-
+    
     if (_parser_thread.joinable())
     {
         pthread_cancel(_parser_thread.native_handle());
@@ -267,38 +198,13 @@ void Player::Stop()
 
     drop_queue();
 
-    if (_codec_context)
-    {
-        avcodec_free_context(&_codec_context);
-        _codec_context = NULL;
-    }
-
-    if (_avio_in)
-    {
-        av_freep(&_avio_in->buffer);
-        avio_context_free(&_avio_in);
-        _avio_in = NULL;
-    }
-
-    if (_frame)
-    {
-        av_frame_free(&_frame);
-        _frame = NULL;
-    }
-
-    if (_format_context)
-    {
-        avformat_close_input(&_format_context);
-        _format_context = NULL;
-    }
-
     if (_append_buff)
     {
-        free(_append_buff);
-        _append_buff = NULL;
+        delete[] _append_buff;
+        _append_buff = nullptr;
     }
 
-    LOGM(LOG_INFO, "STOPPED");
+    LOG(LOG_INFO, "STOPPED");
 }
 
 void Player::Pause()
@@ -310,29 +216,8 @@ void Player::Pause()
         _parser_mutex.lock();
         _decoder_mutex.lock();
 
-        LOGM(LOG_INFO, "PAUSED");
+        LOG(LOG_INFO, "PAUSED");
     }
-}
-
-int Player::read_packet(void *opaque, uint8_t *buf, int buf_size)
-{
-    Player *ctx = (Player *)opaque;
-    std::lock_guard<std::mutex> lock(ctx->_data_mutex);
-
-    if (ctx->_data.tellg() >= ctx->_data.tellp())
-    {
-        if (ctx->_state & STATE_HAVE_DATA)
-        {
-            ctx->_state ^= STATE_HAVE_DATA;
-            ctx->_state |= STATE_NO_DATA;
-            LOGR(LOG_WARN, "no data");
-        }
-        return AVERROR_EOF;
-    }
-
-    ctx->_data.read((char *)buf, buf_size);
-
-    return buf_size;
 }
 
 void Player::AppendData(const char *new_data, size_t new_data_size)
@@ -343,9 +228,9 @@ void Player::AppendData(const char *new_data, size_t new_data_size)
 
     if ((_append_buff_size < old_data_size) | (_append_buff_size_update_counter == 10))
     {
-        free(_append_buff);
+        delete[] _append_buff;
         _append_buff_size = old_data_size;
-        _append_buff = (char *)malloc(_append_buff_size);
+        _append_buff = new char[_append_buff_size];
     }
     else
     {
@@ -374,4 +259,6 @@ void Player::AppendData(const char *new_data, size_t new_data_size)
         _state |= STATE_HAVE_DATA;
         _append_sem.post();
     }
+
+    LOG(LOG_INFO, "Append data: size = " + std::to_string(new_data_size));
 }

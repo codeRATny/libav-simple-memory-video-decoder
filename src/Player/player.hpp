@@ -8,29 +8,16 @@
 #include <fstream>
 #include <sstream>
 #include <mutex>
+
 #include "utils.hpp"
 #include "lazy_logs.hpp"
 #include "player_utils.hpp"
-
-extern "C"
-{
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavcodec/codec.h>
-#include <libavutil/avutil.h>
-#include <libavutil/log.h>
-#include <unistd.h>
-#include <fcntl.h>
-};
+#include "FFmpegIOCtx.hpp"
+#include "FFmpegFormatCtx.hpp"
+#include "FFmpegCodecCtx.hpp"
 
 #define DEFAULT_BUFF_SIZE 1024*1024
 #define SIZE_TS_PACK 188
-
-struct Packet
-{
-    int64_t dts, pts;
-    AVPacket avpack;
-};
 
 enum PlayerStates
 {
@@ -58,28 +45,24 @@ private:
     semaphore _append_sem;
 
     int _state;
-    int _video_stream;
+    unsigned int _video_stream_idx;
 
-    AVFormatContext *_format_context;
-    AVCodecContext *_codec_context;
-    AVIOContext *_avio_in;
-    AVFrame *_frame;
+    FFmpegFormatCtx::Ptr _format_ctx;
+    FFmpegIOCtx::Ptr _avio_ctx;
+    FFmpegCodecCtx::Ptr _codec_ctx;
 
     std::stringstream _data;
-    size_t _ibuf_size;
-    uint8_t *_ibuf;
 
-    std::queue<Packet> _queue_packs;
+    std::queue<FFmpegPacket::Ptr> _queue_packs;
 
     uint16_t _append_buff_size_update_counter;
     size_t _append_buff_size;
     char *_append_buff;
 
-    static int read_packet(void *opaque, uint8_t *buf, int buf_size);
-    static int setup_input(Player *context);
-    static bool grab_frames(Player *context);
-    static void decode_queue(Player *context);
+    void decode_queue();
     void drop_queue();
+    bool grab_frames();
+    int setup_input();
 
 public:
     void AppendData(const char *new_data, size_t new_data_size);
@@ -89,6 +72,5 @@ public:
     void Pause();
     void Stop();
 };
-
 
 #endif

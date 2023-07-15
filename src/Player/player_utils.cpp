@@ -1,32 +1,34 @@
 #include "player_utils.hpp"
 
-void SaveAvFrame(AVFrame *avFrame, const char *filename)
+void SaveAvFrame(FFmpegFrame::Ptr frame, const char *filename)
 {
     FILE *fDump = fopen(filename, "ab");
 
-    uint32_t pitchY = avFrame->linesize[0];
-    uint32_t pitchU = avFrame->linesize[1];
-    uint32_t pitchV = avFrame->linesize[2];
+    auto frame_ptr = frame->get();
 
-    uint8_t *avY = avFrame->data[0];
-    uint8_t *avU = avFrame->data[1];
-    uint8_t *avV = avFrame->data[2];
+    uint32_t pitchY = frame_ptr->linesize[0];
+    uint32_t pitchU = frame_ptr->linesize[1];
+    uint32_t pitchV = frame_ptr->linesize[2];
 
-    for (int i = 0; i < avFrame->height; i++)
+    uint8_t *avY = frame_ptr->data[0];
+    uint8_t *avU = frame_ptr->data[1];
+    uint8_t *avV = frame_ptr->data[2];
+
+    for (int i = 0; i < frame_ptr->height; i++)
     {
-        fwrite(avY, avFrame->width, 1, fDump);
+        fwrite(avY, frame_ptr->width, 1, fDump);
         avY += pitchY;
     }
 
-    for (int i = 0; i < avFrame->height / 2; i++)
+    for (int i = 0; i < frame_ptr->height / 2; i++)
     {
-        fwrite(avU, avFrame->width / 2, 1, fDump);
+        fwrite(avU, frame_ptr->width / 2, 1, fDump);
         avU += pitchU;
     }
 
-    for (int i = 0; i < avFrame->height / 2; i++)
+    for (int i = 0; i < frame_ptr->height / 2; i++)
     {
-        fwrite(avV, avFrame->width / 2, 1, fDump);
+        fwrite(avV, frame_ptr->width / 2, 1, fDump);
         avV += pitchV;
     }
 
