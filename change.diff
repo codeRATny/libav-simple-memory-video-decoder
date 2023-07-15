@@ -1,0 +1,681 @@
+diff --git a/Makefile b/Makefile
+index d81b628..3c7362d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,36 +1,53 @@
+-.Phony: all clean clean_frames
++.Phony: all clean prepare
+ 
+ CXX = g++
+-LIBS = -lavcodec -lavformat -lavutil
++LIBS += -lavcodec -lavformat -lavutil
+ 
+ INCLUDES += -I ./src/Utils
+-INCLUDES += -I ./src/Player
++INCLUDES += -I ./src/Player_v2
++INCLUDES += -I ./src/FFmpegWrap
+ 
+ BIN_PATH = bin
+ BUILD_PATH = build
+ SRC_PATH = src
+ 
+-CFLAGS = -Wall
+-LDFLAGS = -Wall
+-# CFLAGS += -g -fsanitize=leak
+-# LDFLAGS += -g -fsanitize=leak
+ 
+-all: $(BIN_PATH)/main
++CFLAGS = -Wall -g
++LDFLAGS = -Wall -g
++# CFLAGS = -Wall -g -fsanitize=leak
++# LDFLAGS = -Wall -g -fsanitize=leak
+ 
+-$(BIN_PATH)/main: $(BUILD_PATH)/main.o $(BUILD_PATH)/player.o $(BUILD_PATH)/player_utils.o
+-	$(CXX) $(CFLAGS) $^ -o $@ $(LIBS) $(INCLUDES)
++CBJS += $(shell find $(SRC_PATH) -name "*.cpp" -type f)
++OBJS := $(patsubst %.cpp,%.o, $(CBJS))
+ 
+-$(BUILD_PATH)/main.o: $(SRC_PATH)/main.cpp
+-	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
++define clean_objs
++	rm $(OBJS)
++endef
+ 
+-$(BUILD_PATH)/player.o: $(SRC_PATH)/Player/player.cpp
+-	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
++all: $(OBJS) $(BIN_PATH)/main2
+ 
+-$(BUILD_PATH)/player_utils.o: $(SRC_PATH)/Player/player_utils.cpp
+-	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
++%.o : %.cpp
++	$(CXX) $(CFLAGS) -c  $< -o $@ $(INCLUDES) $(LIBS)
++
++$(BIN_PATH)/main2: $(OBJS)
++	$(CXX) $(CFLAGS) $^ -o $@ $(INCLUDES) $(LIBS)
+ 
+ clean:
+-	rm build/*.o bin/main
++	$(call clean_objs)
++	rm $(BIN_PATH)/main2
++# all: prepare $(BIN_PATH)/main2
++
++# $(BIN_PATH)/main2: $(BUILD_PATH)/main2.o $(BUILD_PATH)/player.o $(BUILD_PATH)/player_utils.o ./build/ffmpegwrap.a
++# 	$(CXX) $(CFLAGS) $(LIBS) $^ -o $@  $(INCLUDES) 
++
++# $(BUILD_PATH)/main2.o: $(SRC_PATH)/main2.cpp
++# 	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
++
++# $(BUILD_PATH)/player.o: $(SRC_PATH)/Player_v2/player.cpp
++# 	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
++
++# $(BUILD_PATH)/player_utils.o: $(SRC_PATH)/Player_v2/player_utils.cpp
++# 	$(CXX) $(LDFLAGS) $< -c -o $@ $(INCLUDES)
+ 
+-clean_frames:
+-	rm bin/*.yuv
+\ No newline at end of file
++# prepare:
++# 	$(call install_wrap)
+\ No newline at end of file
+diff --git a/src/Player/player.cpp b/src/Player/player.cpp
+deleted file mode 100644
+index c558ad7..0000000
+--- a/src/Player/player.cpp
++++ /dev/null
+@@ -1,377 +0,0 @@
+-#include "player.hpp"
+-
+-#define LOGS(lvl, message) LOG("INPUT SETUP", lvl, message)
+-#define LOGP(lvl, message) LOG("PARSER", lvl, message)
+-#define LOGD(lvl, message) LOG("DECODER", lvl, message)
+-#define LOGR(lvl, message) LOG("DATA READER", lvl, message)
+-#define LOGM(lvl, message) LOG("PLAYER", lvl, message)
+-
+-int Player::setup_input(Player *context)
+-{
+-    context->_setup_sem.wait();
+-    int ret;
+-
+-    // reader buff
+-    context->_ibuf = (uint8_t *)av_malloc(context->_ibuf_size);
+-
+-    // create context for reading from memory
+-    context->_avio_in = avio_alloc_context(context->_ibuf, context->_ibuf_size, 0, context, &read_packet, NULL, NULL);
+-    context->_format_context = avformat_alloc_context();
+-    context->_format_context->pb = context->_avio_in;
+-
+-    // open empty io
+-    avformat_open_input(&context->_format_context, NULL, NULL, NULL);
+-
+-    // context->_format_context->streams[0]->codecpar->codec_type
+-
+-    for (int i = 0; i < context->_format_context->nb_streams; i++)
+-    {
+-        if (context->_format_context->streams[0]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+-        {
+-            context->_video_stream = i;
+-            break;
+-        }
+-    }
+-
+-    LOGS(LOG_INFO, "READY TO PLAY");
+-    LOGS(LOG_LVL, "Stream index" + std::to_string(context->_video_stream));
+-
+-    context->_start_sem.post();
+-
+-    return 0;
+-}
+-
+-bool Player::grab_frames(Player *context)
+-{
+-    // waiting for play
+-    context->_start_sem.wait();
+-
+-    // join setup thread
+-    context->_setup_thread.join();
+-    
+-
+-    if (!context->_format_context->streams[context->_video_stream] || !context->_format_context->streams[context->_video_stream]->codecpar)
+-    {
+-        LOGP(LOG_WARN, "Not valid stream or codec");
+-        exit(1);
+-    }
+-
+-    if (context->_format_context->streams[context->_video_stream]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
+-    {
+-        LOGP(LOG_WARN, "Skipping audio");
+-        context->Stop();
+-    }
+-
+-    context->_codec_context = avcodec_alloc_context3(avcodec_find_decoder(context->_format_context->streams[context->_video_stream]->codecpar->codec_id));
+-
+-    if (context->_codec_context->codec == NULL)
+-    {
+-        LOGP(LOG_WARN, "Decoder not found, skipping...");
+-        context->Stop();
+-    }
+-
+-    LOGP(LOG_INFO, "Codec " + std::string(context->_codec_context->codec->name));
+-
+-    if (avcodec_open2(context->_codec_context, context->_codec_context->codec, NULL) < 0)
+-    {
+-        LOGP(LOG_ERR, "Codec open err");
+-        context->Stop();
+-    }
+-
+-    // adding opened codec
+-
+-    if (context->_codec_context->codec->capabilities & CODEC_CAP_TRUNCATED)
+-    {
+-        context->_codec_context->flags |= CODEC_FLAG_TRUNCATED;
+-    }
+-
+-    int rt;
+-
+-    // endless loop for parse packs
+-    do
+-    {
+-        AVPacket pack;
+-
+-        LOGP(LOG_INFO, "receive new data");
+-
+-        while ((rt = av_read_frame(context->_format_context, &pack)) >= 0)
+-        {
+-            context->_parser_mutex.lock();
+-            context->_queue_packs.push({pack.dts, pack.pts, std::move(pack)});
+-            context->_queue_sem.post();
+-            context->_parser_mutex.unlock();
+-        }
+-
+-        LOGP(LOG_INFO, "waiting data");
+-        context->_append_sem.wait();
+-
+-        // drop eos
+-        context->_format_context->pb->eof_reached = 0;
+-    } while (true);
+-
+-    return 0;
+-}
+-
+-// e.g. for getting filename for saving frames
+-static std::string get_filename()
+-{
+-    static int i;
+-    i++;
+-    return "frame_" + std::to_string(i) + ".yuv";
+-}
+-
+-void Player::decode_queue(Player *context)
+-{
+-    int frameFinished;
+-    context->_frame = av_frame_alloc();
+-
+-    // endless loop for decoding queue of packs
+-    do
+-    {
+-        // waiting for data on queue
+-        context->_queue_sem.wait();
+-
+-        context->_decoder_mutex.lock();
+-
+-        // decode
+-        avcodec_get_frame_defaults(context->_frame);
+-        avcodec_send_packet(context->_codec_context, &context->_queue_packs.front().avpack);
+-        avcodec_receive_frame(context->_codec_context, context->_frame);
+-
+-        // free mem and save
+-        av_packet_unref(&context->_queue_packs.front().avpack);
+-        if (context->_frame->pkt_size != -1)
+-            SaveAvFrame(context->_frame, get_filename().c_str());
+-        av_frame_unref(context->_frame);
+-
+-        context->_queue_packs.pop();
+-
+-        context->_decoder_mutex.unlock();
+-    } while (true);
+-}
+-
+-Player::Player()
+-{
+-    av_log_set_level(AV_LOG_QUIET);
+-
+-    _append_buff_size_update_counter = 0;
+-    _format_context = NULL;
+-    _codec_context = NULL;
+-    _video_stream = -1;
+-    _frame = NULL;
+-    _avio_in = NULL;
+-
+-    _state = STATE_NO_DATA | STATE_STOP;
+-    _append_buff_size = DEFAULT_BUFF_SIZE;
+-    _ibuf_size = SIZE_TS_PACK;
+-
+-    _append_buff = (char *)malloc(_append_buff_size);
+-}
+-
+-Player::~Player()
+-{
+-    if (_setup_thread.joinable())
+-    {
+-        pthread_cancel(_setup_thread.native_handle());
+-        _setup_thread.join();
+-    }
+-
+-    if (_parser_thread.joinable())
+-    {
+-        pthread_cancel(_parser_thread.native_handle());
+-        _parser_thread.join();
+-    }
+-
+-    if (_decoder_thread.joinable())
+-    {
+-        pthread_cancel(_decoder_thread.native_handle());
+-        _decoder_thread.join();
+-    }
+-
+-    drop_queue();
+-
+-    if (_avio_in)
+-    {
+-        av_freep(&_avio_in->buffer);
+-        avio_context_free(&_avio_in);
+-    }
+-
+-    if (_codec_context)
+-    {
+-        avcodec_free_context(&_codec_context);
+-    }
+-
+-    if (_format_context)
+-    {
+-        avformat_close_input(&_format_context);
+-    }
+-
+-    if (_append_buff)
+-        free(_append_buff);
+-    
+-    if (_frame)
+-        av_frame_free(&_frame);
+-}
+-
+-void Player::Play()
+-{
+-    if (_state & STATE_PAUSE)
+-    {
+-        _state ^= STATE_PAUSE;
+-        _state |= STATE_PLAY;
+-        _parser_mutex.unlock();
+-        _decoder_mutex.unlock();
+-
+-        LOGM(LOG_INFO, "RESUME");
+-    }
+-    else if (_state & STATE_STOP)
+-    {
+-        _state ^= STATE_STOP;
+-        _state |= STATE_PLAY;
+-        _setup_thread = std::thread(setup_input, this);
+-        _parser_thread = std::thread(grab_frames, this);
+-        _decoder_thread = std::thread(decode_queue, this);
+-
+-        LOGM(LOG_INFO, "PLAYING");
+-    }
+-}
+-
+-void Player::drop_queue()
+-{
+-    while (_queue_packs.size() != 0)
+-    {
+-        av_packet_unref(&_queue_packs.front().avpack);
+-        _queue_packs.pop();
+-    }
+-}
+-
+-void Player::Stop()
+-{
+-    if (_setup_thread.joinable())
+-    {
+-        pthread_cancel(_setup_thread.native_handle());
+-        _setup_thread.join();
+-    }
+-
+-    if (_parser_thread.joinable())
+-    {
+-        pthread_cancel(_parser_thread.native_handle());
+-        _parser_thread.join();
+-    }
+-
+-    if (_decoder_thread.joinable())
+-    {
+-        pthread_cancel(_decoder_thread.native_handle());
+-        _decoder_thread.join();
+-    }
+-
+-    drop_queue();
+-
+-    if (_codec_context)
+-    {
+-        avcodec_free_context(&_codec_context);
+-        _codec_context = NULL;
+-    }
+-
+-    if (_avio_in)
+-    {
+-        av_freep(&_avio_in->buffer);
+-        avio_context_free(&_avio_in);
+-        _avio_in = NULL;
+-    }
+-
+-    if (_frame)
+-    {
+-        av_frame_free(&_frame);
+-        _frame = NULL;
+-    }
+-
+-    if (_format_context)
+-    {
+-        avformat_close_input(&_format_context);
+-        _format_context = NULL;
+-    }
+-
+-    if (_append_buff)
+-    {
+-        free(_append_buff);
+-        _append_buff = NULL;
+-    }
+-
+-    LOGM(LOG_INFO, "STOPPED");
+-}
+-
+-void Player::Pause()
+-{
+-    if (_state & STATE_PLAY)
+-    {
+-        _state ^= STATE_PLAY;
+-        _state |= STATE_PAUSE;
+-        _parser_mutex.lock();
+-        _decoder_mutex.lock();
+-
+-        LOGM(LOG_INFO, "PAUSED");
+-    }
+-}
+-
+-int Player::read_packet(void *opaque, uint8_t *buf, int buf_size)
+-{
+-    Player *ctx = (Player *)opaque;
+-    std::lock_guard<std::mutex> lock(ctx->_data_mutex);
+-
+-    if (ctx->_data.tellg() >= ctx->_data.tellp())
+-    {
+-        if (ctx->_state & STATE_HAVE_DATA)
+-        {
+-            ctx->_state ^= STATE_HAVE_DATA;
+-            ctx->_state |= STATE_NO_DATA;
+-            LOGR(LOG_WARN, "no data");
+-        }
+-        return AVERROR_EOF;
+-    }
+-
+-    ctx->_data.read((char *)buf, buf_size);
+-
+-    return buf_size;
+-}
+-
+-void Player::AppendData(const char *new_data, size_t new_data_size)
+-{
+-    std::lock_guard<std::mutex> lock(_data_mutex);
+-
+-    size_t old_data_size = _data.tellp() - _data.tellg();
+-
+-    if ((_append_buff_size < old_data_size) | (_append_buff_size_update_counter == 10))
+-    {
+-        free(_append_buff);
+-        _append_buff_size = old_data_size;
+-        _append_buff = (char *)malloc(_append_buff_size);
+-    }
+-    else
+-    {
+-        _append_buff_size_update_counter++;
+-    }
+-
+-    _data.read(_append_buff, old_data_size);
+-    _data.str("");
+-    _data.clear();
+-
+-    _data.write(_append_buff, old_data_size);
+-    _data.write(new_data, new_data_size);
+-
+-    _data.seekg(0);
+-
+-    if ((_state & STATE_STOP) && (_state & STATE_NO_DATA))
+-    {
+-        _state ^= STATE_NO_DATA;
+-        _state |= STATE_HAVE_DATA;
+-        _setup_sem.post();
+-    }
+-
+-    if ((_state & STATE_PLAY) && (_state & STATE_NO_DATA))
+-    {
+-        _state ^= STATE_NO_DATA;
+-        _state |= STATE_HAVE_DATA;
+-        _append_sem.post();
+-    }
+-}
+\ No newline at end of file
+diff --git a/src/Player/player.hpp b/src/Player/player.hpp
+deleted file mode 100644
+index fb9732c..0000000
+--- a/src/Player/player.hpp
++++ /dev/null
+@@ -1,94 +0,0 @@
+-#ifndef _PLAYER_HPP_
+-#define _PLAYER_HPP_
+-
+-#include <thread>
+-#include <string>
+-#include <queue>
+-#include <utility>
+-#include <fstream>
+-#include <sstream>
+-#include <mutex>
+-#include "utils.hpp"
+-#include "lazy_logs.hpp"
+-#include "player_utils.hpp"
+-
+-extern "C"
+-{
+-#include <libavformat/avformat.h>
+-#include <libavcodec/avcodec.h>
+-#include <libavcodec/codec.h>
+-#include <libavutil/avutil.h>
+-#include <libavutil/log.h>
+-#include <unistd.h>
+-#include <fcntl.h>
+-};
+-
+-#define DEFAULT_BUFF_SIZE 1024*1024
+-#define SIZE_TS_PACK 188
+-
+-struct Packet
+-{
+-    int64_t dts, pts;
+-    AVPacket avpack;
+-};
+-
+-enum PlayerStates
+-{
+-    STATE_PLAY = 1,
+-    STATE_STOP = 2,
+-    STATE_PAUSE = 4,
+-    STATE_HAVE_DATA = 8,
+-    STATE_NO_DATA = 16,
+-};
+-
+-class Player
+-{
+-private:
+-    std::thread _parser_thread;
+-    std::thread _decoder_thread;
+-    std::thread _setup_thread;
+-
+-    std::mutex _parser_mutex;
+-    std::mutex _decoder_mutex;
+-    std::mutex _data_mutex;
+-
+-    semaphore _setup_sem;
+-    semaphore _start_sem;
+-    semaphore _queue_sem;
+-    semaphore _append_sem;
+-
+-    int _state;
+-    int _video_stream;
+-
+-    AVFormatContext *_format_context;
+-    AVCodecContext *_codec_context;
+-    AVIOContext *_avio_in;
+-    AVFrame *_frame;
+-
+-    std::stringstream _data;
+-    size_t _ibuf_size;
+-    uint8_t *_ibuf;
+-
+-    std::queue<Packet> _queue_packs;
+-
+-    uint16_t _append_buff_size_update_counter;
+-    size_t _append_buff_size;
+-    char *_append_buff;
+-
+-    static int read_packet(void *opaque, uint8_t *buf, int buf_size);
+-    static int setup_input(Player *context);
+-    static bool grab_frames(Player *context);
+-    static void decode_queue(Player *context);
+-    void drop_queue();
+-
+-public:
+-    void AppendData(const char *new_data, size_t new_data_size);
+-    Player();
+-    ~Player();
+-    void Play();
+-    void Pause();
+-    void Stop();
+-};
+-
+-
+-#endif
+\ No newline at end of file
+diff --git a/src/Player/player_utils.cpp b/src/Player/player_utils.cpp
+deleted file mode 100644
+index 188384f..0000000
+--- a/src/Player/player_utils.cpp
++++ /dev/null
+@@ -1,48 +0,0 @@
+-#include "player_utils.hpp"
+-
+-void SaveAvFrame(AVFrame *avFrame, const char *filename)
+-{
+-    FILE *fDump = fopen(filename, "ab");
+-
+-    uint32_t pitchY = avFrame->linesize[0];
+-    uint32_t pitchU = avFrame->linesize[1];
+-    uint32_t pitchV = avFrame->linesize[2];
+-
+-    uint8_t *avY = avFrame->data[0];
+-    uint8_t *avU = avFrame->data[1];
+-    uint8_t *avV = avFrame->data[2];
+-
+-    for (int i = 0; i < avFrame->height; i++)
+-    {
+-        fwrite(avY, avFrame->width, 1, fDump);
+-        avY += pitchY;
+-    }
+-
+-    for (int i = 0; i < avFrame->height / 2; i++)
+-    {
+-        fwrite(avU, avFrame->width / 2, 1, fDump);
+-        avU += pitchU;
+-    }
+-
+-    for (int i = 0; i < avFrame->height / 2; i++)
+-    {
+-        fwrite(avV, avFrame->width / 2, 1, fDump);
+-        avV += pitchV;
+-    }
+-
+-    fclose(fDump);
+-}
+-
+-// libav source
+-void avcodec_get_frame_defaults(AVFrame *frame)
+-{
+-#if LIBAVCODEC_VERSION_MAJOR >= 55
+-    // extended_data should explicitly be freed when needed, this code is unsafe currently
+-    // also this is not compatible to the <55 ABI/API
+-    if (frame->extended_data != frame->data && 0)
+-        av_freep(&frame->extended_data);
+-#endif
+-
+-    memset(frame, 0, sizeof(AVFrame));
+-    av_frame_unref(frame);
+-}
+\ No newline at end of file
+diff --git a/src/Player/player_utils.hpp b/src/Player/player_utils.hpp
+deleted file mode 100644
+index e00d6c2..0000000
+--- a/src/Player/player_utils.hpp
++++ /dev/null
+@@ -1,18 +0,0 @@
+-#ifndef _PLAYER_UTILS_HPP_
+-#define _PLAYER_UTILS_HPP_
+-
+-extern "C"
+-{
+-#include <libavformat/avformat.h>
+-#include <libavcodec/avcodec.h>
+-#include <libavcodec/codec.h>
+-#include <libavutil/avutil.h>
+-};
+-
+-#define CODEC_CAP_TRUNCATED 0x0008      // libav source
+-#define CODEC_FLAG_TRUNCATED 0x00010000 // libav source
+-
+-void SaveAvFrame(AVFrame *avFrame, const char *filename);
+-void avcodec_get_frame_defaults(AVFrame *frame);
+-
+-#endif
+\ No newline at end of file
+diff --git a/src/main.cpp b/src/main.cpp
+deleted file mode 100644
+index bab7282..0000000
+--- a/src/main.cpp
++++ /dev/null
+@@ -1,31 +0,0 @@
+-#include "player.hpp"
+-#include <iostream>
+-
+-int main(void)
+-{
+-    // E.G. DATA
+-    std::stringstream ss;
+-    std::ifstream t("");
+-    ss << t.rdbuf();
+-    
+-    Player player;
+-    player.AppendData(ss.str().c_str(), ss.tellp());
+-    // player.AppendData(ss.str().c_str(), ss.tellp());
+-
+-    player.Play();
+-    
+-    // player.Pause();
+-    // sleep(2);
+-
+-    // player.Play();
+-    // sleep(10);
+-
+-    // player.AppendData(ss.str().c_str(), ss.tellp());
+-    sleep(4);
+-
+-    player.Stop();
+-
+-    LOG("MAIN", LOG_INFO, "exiting...");
+-
+-    return 0;
+-}
