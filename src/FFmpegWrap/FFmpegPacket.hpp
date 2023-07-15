@@ -12,6 +12,8 @@ extern "C"
 #include <libavutil/log.h>
 }
 
+#include "lazy_logs.hpp"
+
 class FFmpegPacket
 {
 public:
@@ -20,6 +22,7 @@ public:
     FFmpegPacket(std::shared_ptr<AVPacket> packet = nullptr);
     ~FFmpegPacket() = default;
     AVPacket *get();
+    int GetStreamIdx();
 
 private:
     std::shared_ptr<AVPacket> _pack;

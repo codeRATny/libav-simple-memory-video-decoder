@@ -2,17 +2,19 @@
 
 FFmpegFormatCtx::FFmpegFormatCtx(std::string url)
 {
-    _format_context.reset(avformat_alloc_context(), [](AVFormatContext *ptr){
+    LOG(LOG_INFO, "Construct");
+    _format_ctx.reset(avformat_alloc_context(), [](AVFormatContext *ptr){
         avformat_close_input(&ptr);
     });
 
-    _format_ptr = _format_context.get();
+    _format_ptr = _format_ctx.get();
     avformat_open_input(&_format_ptr, url.c_str(), NULL, NULL);
 }
 
 FFmpegFormatCtx::FFmpegFormatCtx(FFmpegIOCtx::Ptr avio, int buff_size)
 {
-    _format_context.reset(avformat_alloc_context(), [](AVFormatContext *ptr){
+    LOG(LOG_INFO, "Construct with buffer = " + std::to_string(buff_size));
+    _format_ctx.reset(avformat_alloc_context(), [](AVFormatContext *ptr){
         avformat_close_input(&ptr);
     });
 
@@ -21,9 +23,9 @@ FFmpegFormatCtx::FFmpegFormatCtx(FFmpegIOCtx::Ptr avio, int buff_size)
     _avio_weak = _avio;
     _avio->Init(_buff_size, _avio_weak);
 
-    _format_context->pb = _avio->get();
+    _format_ctx->pb = _avio->get();
 
-    _format_ptr = _format_context.get();
+    _format_ptr = _format_ctx.get();
     avformat_open_input(&_format_ptr, NULL, NULL, NULL);
 }
 
@@ -31,12 +33,12 @@ std::vector<unsigned int> FFmpegFormatCtx::FindVideoStreamIDX()
 {
     std::vector<unsigned int> result;
 
-    for (unsigned int i = 0; i < _format_context->nb_streams; i++)
+    for (unsigned int i = 0; i < _format_ctx->nb_streams; i++)
     {
-        if (_format_context->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+        if (_format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
         {
-            if (_format_context->streams[i])
-                if (_format_context->streams[i]->codecpar)
+            if (_format_ctx->streams[i])
+                if (_format_ctx->streams[i]->codecpar)
                     result.push_back(i);
         }
     }
@@ -46,11 +48,11 @@ std::vector<unsigned int> FFmpegFormatCtx::FindVideoStreamIDX()
 
 AVCodecID FFmpegFormatCtx::GetCodecID(unsigned int stream_idx)
 {
-    if (stream_idx < _format_context->nb_streams)
+    if (stream_idx < _format_ctx->nb_streams)
     {
-        if (_format_context->streams[stream_idx])
-            if (_format_context->streams[stream_idx]->codecpar)
-                return _format_context->streams[stream_idx]->codecpar->codec_id;
+        if (_format_ctx->streams[stream_idx])
+            if (_format_ctx->streams[stream_idx]->codecpar)
+                return _format_ctx->streams[stream_idx]->codecpar->codec_id;
     }
 
     return AV_CODEC_ID_NONE;
@@ -66,18 +68,19 @@ void FFmpegFormatCtx::TurnOffRealTimeMode()
     
 }
 
-FFmpegPacket::Ptr FFmpegFormatCtx::ReadPacket()
+int FFmpegFormatCtx::ReadPacket(FFmpegPacket::Ptr &packet)
 {
-    FFmpegPacket::Ptr out_packet = std::make_shared<FFmpegPacket>();
-    auto ret = av_read_frame(_format_context.get(), out_packet->get());
+    packet = std::make_shared<FFmpegPacket>();
+    return av_read_frame(_format_ctx.get(), packet->get());
+}
 
-    if (ret != 0)
-        return nullptr;
-
-    return out_packet;
+void FFmpegFormatCtx::DropEOS()
+{
+    _format_ctx->pb->eof_reached = 0;
 }
 
 FFmpegFormatCtx::~FFmpegFormatCtx()
 {
-    _avio = nullptr;
+    // _avio = nullptr;
+    LOG(LOG_INFO, "Destruct");
 }

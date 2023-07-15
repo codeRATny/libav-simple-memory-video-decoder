@@ -13,6 +13,8 @@ extern "C"
 #include <libavutil/log.h>
 }
 
+#include "lazy_logs.hpp"
+
 class FFmpegIOCtx : public std::enable_shared_from_this<FFmpegIOCtx>
 {
 public:

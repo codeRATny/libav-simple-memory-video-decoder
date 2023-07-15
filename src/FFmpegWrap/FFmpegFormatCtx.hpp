@@ -14,6 +14,7 @@ extern "C"
 #include <libavutil/log.h>
 }
 
+#include "lazy_logs.hpp"
 #include "FFmpegIOCtx.hpp"
 #include "FFmpegPacket.hpp"
 
@@ -28,14 +29,15 @@ public:
     AVCodecID GetCodecID(unsigned int stream_idx);
     void TurnOnRealTimeMode();
     void TurnOffRealTimeMode();
-    FFmpegPacket::Ptr ReadPacket();
+    void DropEOS();
+    int ReadPacket(FFmpegPacket::Ptr &packet);
     ~FFmpegFormatCtx();
 
 private:
     int _buff_size;
     FFmpegIOCtx::Weak _avio_weak;
     FFmpegIOCtx::Ptr _avio;
-    std::shared_ptr<AVFormatContext> _format_context;
+    std::shared_ptr<AVFormatContext> _format_ctx;
     AVFormatContext* _format_ptr;
 };
 

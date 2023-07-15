@@ -12,6 +12,7 @@ extern "C"
 #include <libavutil/log.h>
 }
 
+#include "lazy_logs.hpp"
 #include "FFmpegFrame.hpp"
 #include "FFmpegPacket.hpp"
 
@@ -22,7 +23,8 @@ public:
 
     FFmpegCodecCtx() = default;
     void Open(AVCodecID codec_id);
-    FFmpegFrame::Ptr Decode(FFmpegPacket::Ptr packet);
+    FFmpegFrame::Ptr Decode(FFmpegPacket::Ptr &packet);
+    AVCodecContext *get();
     ~FFmpegCodecCtx() = default;
 
 private:
